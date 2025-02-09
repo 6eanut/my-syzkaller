@@ -4,6 +4,7 @@
 package main
 
 import (
+	//提供基础的数据结构、输入输出处理、并发控制、网络操作、系统调用等功能
 	"bytes"
 	"context"
 	"encoding/json"
@@ -20,8 +21,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
+	//与仪表盘交互的API
 	"github.com/google/syzkaller/dashboard/dashapi"
+	//分别提供了资源管理、语料库操作、C源码生成、数据库操作、RPC通信、模糊器逻辑、队列管理、GCE支持、接口探测、镜像管理、日志记录、管理器逻辑、配置管理、操作系统工具、崩溃报告、漏洞重现、RPC服务器、测试运行、信号处理、统计信息、虚拟机信息等功能
 	"github.com/google/syzkaller/pkg/asset"
 	"github.com/google/syzkaller/pkg/corpus"
 	"github.com/google/syzkaller/pkg/csource"
@@ -44,17 +46,24 @@ import (
 	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/pkg/stat"
 	"github.com/google/syzkaller/pkg/vminfo"
+	//用于程序生成和目标系统定义
 	"github.com/google/syzkaller/prog"
 	"github.com/google/syzkaller/sys/targets"
+	//虚拟机管理和调度
 	"github.com/google/syzkaller/vm"
 	"github.com/google/syzkaller/vm/dispatcher"
 )
 
 var (
+	//定义了一个命令行标志 -config，用于指定配置文件路径
 	flagConfig = flag.String("config", "", "configuration file")
+	//定义了一个布尔类型的命令行标志 -debug，用于启用调试模式，将所有虚拟机的输出打印到控制台
 	flagDebug  = flag.Bool("debug", false, "dump all VM output to console")
+	//定义了一个命令行标志 -bench，用于指定一个文件路径，周期性地将执行统计信息写入该文件
 	flagBench  = flag.String("bench", "", "write execution statistics into this file periodically")
+	//定义了一个命令行标志 -mode，用于指定运行模式，默认模式为 ModeFuzzing，即模糊测试模式。modesDescription() 函数返回可用模式的描述字符串
 	flagMode   = flag.String("mode", ModeFuzzing.Name, modesDescription())
+	//定义了一个命令行标志 -tests，用于指定匹配测试文件名的前缀，主要用于 -mode run-tests 模式下
 	flagTests  = flag.String("tests", "", "prefix to match test file names (for -mode run-tests)")
 )
 
@@ -106,7 +115,6 @@ type Manager struct {
 	benchFile *os.File
 
 	assetStorage *asset.Storage
-	fsckChecker  image.FsckChecker
 
 	reproLoop *manager.ReproLoop
 
@@ -124,6 +132,7 @@ type Mode struct {
 	CheckConfig   func(cfg *mgrconfig.Config) error
 }
 
+//各种mode
 var (
 	ModeFuzzing = &Mode{
 		Name:         "fuzzing",
@@ -206,19 +215,25 @@ const (
 )
 
 func main() {
+	//使用 Go 的 flag 包解析命令行参数
 	flag.Parse()
+	//检查 Git 版本信息
 	if !prog.GitRevisionKnown() {
 		log.Fatalf("bad syz-manager build: build with make, run bin/syz-manager")
 	}
+	//启用日志缓存
 	log.EnableLogCaching(1000, 1<<20)
+	//从命令行参数中获取配置文件路径，并尝试加载配置文件。如果加载失败，则记录错误并终止程序
 	cfg, err := mgrconfig.LoadFile(*flagConfig)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
+	//如果配置中指定了仪表盘地址，则设置日志名称为配置中的名称。这样可以在多个 syz-manager 实例的日志中更容易区分
 	if cfg.DashboardAddr != "" {
 		// This lets better distinguish logs of individual syz-manager instances.
 		log.SetName(cfg.Name)
 	}
+	//根据命令行参数中的模式名找到对应的模式。如果找不到匹配的模式，则打印默认的命令行参数帮助信息并终止程序
 	var mode *Mode
 	for _, m := range modes {
 		if *flagMode == m.Name {
@@ -230,19 +245,27 @@ func main() {
 		flag.PrintDefaults()
 		log.Fatalf("unknown mode: %v", *flagMode)
 	}
+	//如果当前模式定义了配置检查函数，则调用该函数进行额外的配置验证。如果验证失败，则记录错误并终止程序
 	if mode.CheckConfig != nil {
 		if err := mode.CheckConfig(cfg); err != nil {
 			log.Fatalf("%v mode: %v", mode.Name, err)
 		}
 	}
+	//如果当前模式不使用仪表盘，则清空相关配置项，避免不必要的连接或操作
 	if !mode.UseDashboard {
 		cfg.DashboardClient = ""
 		cfg.HubClient = ""
 	}
+	//最后，调用 RunManager 函数启动 syz-manager，传入选定的模式和配置
 	RunManager(mode, cfg)
 }
+//总结来说，main 函数的主要任务是初始化环境、加载配置、选择运行模式，并最终启动 syz-manager。每个步骤都包含了必要的检查和错误处理，确保程序能够稳定且正确地运行
 
 func RunManager(mode *Mode, cfg *mgrconfig.Config) {
+	//初始化虚拟机池
+	// 如果配置中未启用 VMLess 模式（即需要使用虚拟机），则调用 vm.Create 创建一个虚拟机池。
+	// 如果创建失败，则记录错误并终止程序。
+	// 使用 defer 确保在函数结束时关闭虚拟机池。
 	var vmPool *vm.Pool
 	if !cfg.VMLess {
 		var err error
@@ -252,14 +275,15 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 		}
 		defer vmPool.Close()
 	}
-
+	//确保工作目录存在，如果不存在则创建
 	osutil.MkdirAll(cfg.Workdir)
-
+	//创建一个新的报告生成器实例，用于后续处理崩溃报告
 	reporter, err := report.NewReporter(cfg)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-
+	// 创建并初始化 Manager 实例，包括配置、模式、虚拟机池、通道、目标系统信息、报告生成器、崩溃存储等。
+	// 如果启用了调试模式 (*flagDebug)，将进程数设置为1
 	mgr := &Manager{
 		cfg:                cfg,
 		mode:               mode,
@@ -282,20 +306,22 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 	if *flagDebug {
 		mgr.cfg.Procs = 1
 	}
+	//创建 HTTP 服务器实例，用于提供状态监控和其他管理功能
 	mgr.http = &manager.HTTPServer{
 		// Note that if cfg.HTTP == "", we don't start the server.
 		Cfg:        cfg,
 		StartTime:  time.Now(),
 		CrashStore: mgr.crashStore,
 	}
-
+	//如果当前模式需要加载语料库，则启动一个 goroutine 进行预加载；否则直接关闭预加载通道
 	mgr.initStats()
 	if mgr.mode.LoadCorpus {
 		go mgr.preloadCorpus()
 	} else {
 		close(mgr.corpusPreload)
 	}
-
+	//创建并初始化 RPC 服务器，用于与模糊器通信。
+	//监听指定端口，并在一个新的 goroutine 中启动服务
 	// Create RPC server for fuzzers.
 	mgr.servStats = rpcserver.NewStats()
 	rpcCfg := &rpcserver.RemoteConfig{
@@ -319,7 +345,7 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 		}
 	}()
 	log.Logf(0, "serving rpc on tcp://%v", mgr.serv.Port())
-
+	// 如果配置了仪表盘地址，则创建一个仪表盘客户端实例，并根据配置决定是否仅用于重现
 	if cfg.DashboardAddr != "" {
 		opts := []dashapi.DashboardOpts{}
 		if cfg.DashboardUserAgent != "" {
@@ -334,22 +360,24 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 			mgr.dash = dash
 		}
 	}
-
+	//如果配置了资产存储，则初始化相应的存储实例
 	if !cfg.AssetStorage.IsEmpty() {
 		mgr.assetStorage, err = asset.StorageFromConfig(cfg.AssetStorage, mgr.dash)
 		if err != nil {
 			log.Fatalf("failed to init asset storage: %v", err)
 		}
 	}
-
+	//如果指定了统计文件路径，则初始化统计文件写入逻辑
 	if *flagBench != "" {
 		mgr.initBench()
 	}
-
+	//启动一个 goroutine 来定期发送心跳信号，确保管理器和虚拟机之间的通信正常
 	go mgr.heartbeatLoop()
+	//如果不是烟雾测试模式，则设置处理中断信号的回调函数，以便在接收到中断信号时优雅地关闭虚拟机池
 	if mgr.mode != ModeSmokeTest {
 		osutil.HandleInterrupts(vm.Shutdown)
 	}
+	//如果没有启动虚拟机，则提示用户手动启动 syz-executor 并等待关闭信号
 	if mgr.vmPool == nil {
 		log.Logf(0, "no VMs started (type=none)")
 		log.Logf(0, "you are supposed to start syz-executor manually as:")
@@ -357,12 +385,13 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 		<-vm.Shutdown
 		return
 	}
+	//创建虚拟机调度器，并将其关联到 HTTP 服务器和重现循环
 	mgr.pool = vm.NewDispatcher(mgr.vmPool, mgr.fuzzerInstance)
 	mgr.http.Pool = mgr.pool
 	mgr.reproLoop = manager.NewReproLoop(mgr, mgr.vmPool.Count()-mgr.cfg.FuzzingVMs, mgr.cfg.DashboardOnlyRepro)
 	mgr.http.ReproLoop = mgr.reproLoop
 	mgr.http.TogglePause = mgr.pool.TogglePause
-
+	//如果配置了 HTTP 地址，则启动 HTTP 服务器，提供管理界面
 	if mgr.cfg.HTTP != "" {
 		go func() {
 			err := mgr.http.Serve(ctx)
@@ -371,6 +400,8 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 			}
 		}()
 	}
+	// 启动跟踪已使用文件的任务和处理模糊测试结果的任务。
+	// 调度器进入主循环，开始管理和调度虚拟机
 	go mgr.trackUsedFiles()
 	go mgr.processFuzzingResults(ctx)
 	mgr.pool.Loop(ctx)
@@ -553,6 +584,7 @@ func (mgr *Manager) processRepro(res *manager.ReproResult) {
 }
 
 func (mgr *Manager) preloadCorpus() {
+	//核心是LoadSeeds
 	info, err := manager.LoadSeeds(mgr.cfg, false)
 	if err != nil {
 		log.Fatalf("failed to load corpus: %v", err)
@@ -584,6 +616,8 @@ func (mgr *Manager) loadCorpus(enabledSyscalls map[*prog.Syscall]bool) []fuzzer.
 }
 
 func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updInfo dispatcher.UpdateInfo) {
+	// 使用互斥锁保护对 mgr.serv 的访问，确保线程安全。
+	// 如果 serv 为 nil，表示 RPC 服务器正在关闭，直接返回
 	mgr.mu.Lock()
 	serv := mgr.serv
 	mgr.mu.Unlock()
@@ -591,20 +625,27 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 		// We're in the process of switching off the RPCServer.
 		return
 	}
+	// 创建一个容量为 10 的通道 injectExec，用于向虚拟机实例注入执行信号。
+	// 调用 serv.CreateInstance 方法，将当前虚拟机实例及其相关信息注册到 RPC 服务器中。
 	injectExec := make(chan bool, 10)
 	serv.CreateInstance(inst.Index(), injectExec, updInfo)
-
+	// 调用 runInstanceInner 方法，启动并运行虚拟机实例的实际模糊测试任务。
+	// 如果检测到早期崩溃（通过 EarlyFinishCb 回调），则调用 serv.StopFuzzing 停止当前实例的模糊测试
 	rep, vmInfo, err := mgr.runInstanceInner(ctx, inst, injectExec, vm.EarlyFinishCb(func() {
 		// Depending on the crash type and kernel config, fuzzing may continue
 		// running for several seconds even after kernel has printed a crash report.
 		// This litters the log and we want to prevent it.
 		serv.StopFuzzing(inst.Index())
 	}))
+	// 如果有报告 (rep) 并且包含执行器信息 (rep.Executor)，则将其添加到 extraExecs 切片中。
+	// 调用 ShutdownInstance 方法，关闭当前虚拟机实例，并获取最后一次执行信息和机器信息
 	var extraExecs []report.ExecutorInfo
 	if rep != nil && rep.Executor != nil {
 		extraExecs = []report.ExecutorInfo{*rep.Executor}
 	}
 	lastExec, machineInfo := serv.ShutdownInstance(inst.Index(), rep != nil, extraExecs...)
+	// 如果有报告，则调用 rpcserver.PrependExecuting 将最后一次执行信息前置到报告中。
+	// 如果 vmInfo 不为空，则将其附加到 machineInfo 中，并更新报告中的 MachineInfo 字段	
 	if rep != nil {
 		rpcserver.PrependExecuting(rep, lastExec)
 		if len(vmInfo) != 0 {
@@ -612,12 +653,14 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 		}
 		rep.MachineInfo = machineInfo
 	}
+	// 如果没有错误并且有报告，则将崩溃报告发送到 crashes 通道，以便进一步处理
 	if err == nil && rep != nil {
 		mgr.crashes <- &manager.Crash{
 			InstanceIndex: inst.Index(),
 			Report:        rep,
 		}
 	}
+	// 如果有错误发生，则记录日志，输出虚拟机实例的索引和具体的错误信息
 	if err != nil {
 		log.Logf(1, "VM %v: failed with error: %v", inst.Index(), err)
 	}
@@ -625,11 +668,14 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 
 func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, injectExec <-chan bool,
 	finishCb vm.EarlyFinishCb) (*report.Report, []byte, error) {
+	// 调用 inst.Forward 方法，将管理器的服务端口转发到虚拟机实例中。
+	// 如果设置失败，则返回错误
 	fwdAddr, err := inst.Forward(mgr.serv.Port())
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to setup port forwarding: %w", err)
 	}
-
+	// 检查 sysTarget.ExecutorBin 是否已经提供了 syz-executor 二进制文件路径。如果提供了，则直接使用该路径。
+	// 如果没有提供，则调用 inst.Copy 方法将本地的 ExecutorBin 文件复制到虚拟机实例中，并获取其路径
 	// If ExecutorBin is provided, it means that syz-executor is already in the image,
 	// so no need to copy it.
 	executorBin := mgr.sysTarget.ExecutorBin
@@ -639,10 +685,18 @@ func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, inj
 			return nil, nil, fmt.Errorf("failed to copy binary: %w", err)
 		}
 	}
-
+	// 记录开始时间。
+	// 使用 net.SplitHostPort 解析转发地址，分离出主机名和端口号。
+	// 构造并执行模糊测试命令字符串 cmd，包括 syz-executor 的路径、实例索引、主机名和端口号。
+	// 调用 inst.Run 方法执行命令：
+	// 设置运行超时时间为 mgr.cfg.Timeouts.VMRunningTime。
+	// 使用 mgr.reporter 生成报告。
+	// 传入 ExitTimeout 和 StopContext(ctx) 来控制命令的退出和上下文取消。
+	// 通过 InjectExecuting(injectExec) 注入执行信号。
+	// 使用 finishCb 作为早期完成回调函数。
+	// 如果执行失败，则返回错误。
 	// Run the fuzzer binary.
 	start := time.Now()
-
 	host, port, err := net.SplitHostPort(fwdAddr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse manager's address")
@@ -655,6 +709,8 @@ func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, inj
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to run fuzzer: %w", err)
 	}
+	// 如果 rep 为 nil，表示模糊测试正常结束（没有崩溃），记录日志并返回 nil。
+	// 否则，调用 inst.Info() 获取虚拟机的信息。如果获取失败，则将错误信息转换为字节数组
 	if rep == nil {
 		// This is the only "OK" outcome.
 		log.Logf(0, "VM %v: running for %v, restarting", inst.Index(), time.Since(start))
@@ -945,11 +1001,10 @@ func (mgr *Manager) uploadReproAssets(repro *repro.Result) []dashapi.NewAsset {
 			return
 		}
 		// Report file systems that fail fsck with a separate tag.
-		if mgr.cfg.RunFsck && dashTyp == dashapi.MountInRepro &&
-			c.Meta.Attrs.Fsck != "" && mgr.fsckChecker.Exists(c.Meta.Attrs.Fsck) {
+		if mgr.cfg.RunFsck && dashTyp == dashapi.MountInRepro && c.Meta.Attrs.Fsck != "" {
 			logs, isClean, err := image.Fsck(r2, c.Meta.Attrs.Fsck)
 			if err != nil {
-				log.Errorf("fsck of the asset %v failed: %v", name, err)
+				log.Logf(1, "fsck of the asset %v failed: %v", name, err)
 			} else {
 				asset.FsckLog = logs
 				asset.FsIsClean = isClean

@@ -98,24 +98,40 @@ func (p *Pool[T]) waitUnpaused() {
 }
 
 func (p *Pool[T]) Loop(ctx context.Context) {
+	// 使用 sync.WaitGroup 来跟踪所有 goroutine 的完成状态。
+	// wg.Add(len(p.instances)) 增加等待计数器，确保每个实例对应的 goroutine 都能正确地通知其完成。
 	var wg sync.WaitGroup
 	wg.Add(len(p.instances))
+	//遍历 p.instances，这是 Pool 中包含的所有实例列表。
+	//对于每个实例 inst，创建一个匿名 goroutine 来运行该实例的主循环。
+	// 这里使用了局部变量 inst := inst 来避免闭包问题，确保每个 goroutine 都有自己独立的实例引用
 	for _, inst := range p.instances {
 		inst := inst
+		// 在每个 goroutine 内部，使用 for ctx.Err() == nil 循环检查上下文是否已经取消或超时。
+		// 如果上下文没有错误，则继续调用 p.runInstance(ctx, inst) 执行实例的主逻辑。
+		// p.runInstance(ctx, inst) 是实际执行实例工作的函数，可能包括启动虚拟机、执行测试任务、处理崩溃报告等
 		go func() {
 			for ctx.Err() == nil {
 				p.runInstance(ctx, inst)
 			}
+			// 当上下文出现错误（即外部请求停止或系统关闭）时，goroutine 退出循环，
+			// 并调用 wg.Done() 标记当前实例的 goroutine 已完成
 			wg.Done()
 		}()
 	}
+	// wg.Wait() 阻塞当前线程，直到所有 goroutine 都调用了 wg.Done()，即所有实例的工作都已完成
 	wg.Wait()
 }
 
 func (p *Pool[T]) runInstance(ctx context.Context, inst *poolInstance[T]) {
+	//确保池当前未处于暂停状态。如果有暂停信号，该调用会阻塞直到池被解暂停
 	p.waitUnpaused()
+	//使用 context.WithCancel 创建一个新的上下文，允许在需要时取消当前实例的执行。这有助于优雅地关闭资源
 	ctx, cancel := context.WithCancel(ctx)
-
+	// 记录日志，表示正在启动实例。
+	//调用 inst.reset(cancel) 初始化实例并设置取消回调。
+	//记录启动时间，并将实例状态设置为 StateBooting。
+	//使用 defer 在函数结束时将实例状态恢复为 StateOffline。
 	log.Logf(2, "pool: booting instance %d", inst.idx)
 
 	inst.reset(cancel)
@@ -123,16 +139,22 @@ func (p *Pool[T]) runInstance(ctx context.Context, inst *poolInstance[T]) {
 	start := time.Now()
 	inst.status(StateBooting)
 	defer inst.status(StateOffline)
-
+	//调用 p.creator(inst.idx) 创建具体的实例对象（例如虚拟机）。
+	//如果创建失败，将错误发送到 BootErrors 通道，并返回。
+	//使用 defer obj.Close() 确保在函数结束时关闭实例对象，避免资源泄露
 	obj, err := p.creator(inst.idx)
 	if err != nil {
 		p.BootErrors <- err
 		return
 	}
 	defer obj.Close()
-
+	//记录从启动开始到现在的耗时，并保存到 BootTime 统计中
 	p.BootTime.Save(time.Since(start))
-
+	//将实例状态更新为 StateWaiting，表示实例已准备好等待任务。
+	//锁定互斥锁以安全地读取 job 和 jobChan 字段。
+	//如果没有预先分配的任务 (job == nil)，则通过 select 语句等待新任务：
+	//从 jobChan 或 switchToJob 通道接收新的任务。	
+	//如果上下文被取消，则直接返回。
 	inst.status(StateWaiting)
 	// The job and jobChan fields are subject to concurrent updates.
 	inst.mu.Lock()
@@ -149,7 +171,9 @@ func (p *Pool[T]) runInstance(ctx context.Context, inst *poolInstance[T]) {
 			return
 		}
 	}
-
+	// 更新实例状态为 StateRunning，表示实例现在正在执行任务。
+	// 调用 job(ctx, obj, inst.updateInfo) 执行具体任务。
+	// 这里的 job 是一个函数，它接收上下文、实例对象以及更新信息的回调函数作为参数
 	inst.status(StateRunning)
 	job(ctx, obj, inst.updateInfo)
 }

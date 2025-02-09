@@ -34,6 +34,8 @@ type Seeds struct {
 func LoadSeeds(cfg *mgrconfig.Config, immutable bool) (Seeds, error) {
 	var info Seeds
 	var err error
+	// 使用 db.Open 方法尝试打开指定工作目录下的 corpus.db 数据库文件。根据 immutable 参数决定是否以只读模式打开数据库。
+	// 如果打开失败且数据库为空，则返回一个错误；如果数据库非空但操作中发生了错误，则记录错误日志。
 	info.CorpusDB, err = db.Open(filepath.Join(cfg.Workdir, "corpus.db"), !immutable)
 	if err != nil {
 		if info.CorpusDB == nil {
@@ -41,15 +43,21 @@ func LoadSeeds(cfg *mgrconfig.Config, immutable bool) (Seeds, error) {
 		}
 		log.Errorf("read %v inputs from corpus and got error: %v", len(info.CorpusDB.Records), err)
 	}
+	//根据 CorpusDB.Records 的长度判断语料库是否为空（即 Fresh 字段），这有助于识别是否需要更新或重新生成语料库
 	info.Fresh = len(info.CorpusDB.Records) == 0
 	corpusFlags := versionToFlags(info.CorpusDB.Version)
+	//创建一个通道 outputs 用来接收从数据库中读取到的输入数据。
+	//启动一个 goroutine 异步执行 readInputs 函数来填充 outputs 通道，并将任何发生的错误发送到 chErr 通道。
 	outputs := make(chan *input, 32)
 	chErr := make(chan error, 1)
 	go func() {
+		//读种子文件
 		chErr <- readInputs(cfg, info.CorpusDB, outputs)
 		close(outputs)
 	}()
-
+	// 遍历 outputs 通道中的每一个输入 (inp)，并根据其状态（如是否为种子、是否存在错误等）进行不同的处理。
+	// 对于有问题的输入（包括损坏的种子或语料库条目），分别统计并记录。
+	// 将有效的候选输入添加到 candidates 列表中，同时设置相应的标志位（如 ProgMinimized）
 	brokenSeeds := 0
 	skippedSeeds := 0
 	var brokenCorpus []string
@@ -83,6 +91,8 @@ func LoadSeeds(cfg *mgrconfig.Config, immutable bool) (Seeds, error) {
 			Flags: flags,
 		})
 	}
+	// 检查是否有任何错误发生，并记录损坏或跳过的种子数。
+	// 如果 immutable 为 false，删除损坏的语料库条目并刷新数据库。
 	if err := <-chErr; err != nil {
 		return Seeds{}, err
 	}
@@ -103,7 +113,9 @@ func LoadSeeds(cfg *mgrconfig.Config, immutable bool) (Seeds, error) {
 	}
 	// Switch database to the mode when it does not keep records in memory.
 	// We don't need them anymore and they consume lots of memory.
+	// 调用 DiscardData 方法释放不再需要的数据，减少内存占用
 	info.CorpusDB.DiscardData()
+	// 将包含所有有效候选输入和其他相关信息的 info 结构体返回
 	info.Candidates = candidates
 	return info, nil
 }
