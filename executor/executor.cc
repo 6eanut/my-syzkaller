@@ -562,14 +562,21 @@ static uint64 sandbox_arg = 0;
 
 int main(int argc, char** argv)
 {
+	// 如果没有提供任何命令行参数，则输出错误信息 "no command" 并返回 1 表示失败
 	if (argc == 1) {
 		fprintf(stderr, "no command");
 		return 1;
 	}
+	// 如果第一个参数是 "runner"，则调用 runner 函数，并传递命令行参数。
+	// 如果 runner 返回，则调用 fail 函数输出错误信息 "runner returned"
 	if (strcmp(argv[1], "runner") == 0) {
 		runner(argv, argc);
 		fail("runner returned");
 	}
+	// 如果第一个参数是 "leak"，则检查是否定义了 SYZ_HAVE_LEAK_CHECK 宏：
+	// 如果定义了，则调用 check_leaks 函数进行内存泄漏检查。
+	// 如果未定义，则调用 fail 函数输出错误信息 "leak checking is not implemented"。
+	// 最后返回 0 表示成功
 	if (strcmp(argv[1], "leak") == 0) {
 #if SYZ_HAVE_LEAK_CHECK
 		check_leaks(argv + 2, argc - 2);
@@ -578,21 +585,29 @@ int main(int argc, char** argv)
 #endif
 		return 0;
 	}
+	// 如果第一个参数是 "test"，则调用 run_tests 函数运行测试。如果提供了第二个参数，则将其作为测试名称传递给 run_tests 函数
 	if (strcmp(argv[1], "test") == 0)
 		return run_tests(argc == 3 ? argv[2] : nullptr);
-
+	// 如果第一个参数不是 "exec"，则输出错误信息 "unknown command" 并返回 1 表示失败
 	if (strcmp(argv[1], "exec") != 0) {
 		fprintf(stderr, "unknown command");
 		return 1;
 	}
 
+	//如果第一个参数是exec，则执行如下操作
+	// 记录当前时间。
+	// 调用 os_init 函数初始化操作系统相关的设置。
+	// 使用临时目录。
+	// 安装段错误处理器。
+	// 设置当前线程为第一个线程。
 	start_time_ms = current_time_ms();
 
 	os_init(argc, argv, (char*)SYZ_DATA_OFFSET, SYZ_NUM_PAGES * SYZ_PAGE_SIZE);
 	use_temporary_dir();
 	install_segv_handler();
 	current_thread = &threads[0];
-
+	// 如果提供了第三个参数且其值为 "snapshot"，则调用 SnapshotSetup 函数进行快照模式的初始化。
+	// 否则，进行常规的初始化操作，包括映射输入文件、设置输出映射、关闭不必要的文件描述符等
 	if (argc > 2 && strcmp(argv[2], "snapshot") == 0) {
 		SnapshotSetup(argv, argc);
 	} else {
@@ -612,7 +627,7 @@ int main(int argc, char** argv)
 		// after the program has been received.
 		close(kOutFd);
 #endif
-
+		// 检查并设置最大信号文件描述符和覆盖过滤器文件描述符，并在使用后关闭它们
 		if (fcntl(kMaxSignalFd, F_GETFD) != -1) {
 			// Use random addresses for coverage filters to not collide with output_data.
 			max_signal.emplace(kMaxSignalFd, reinterpret_cast<void*>(0x110c230000ull));
@@ -622,7 +637,9 @@ int main(int argc, char** argv)
 			cover_filter.emplace(kCoverFilterFd, reinterpret_cast<void*>(0x110f230000ull));
 			close(kCoverFilterFd);
 		}
-
+		// 设置控制管道。
+		// 接收握手消息。
+		// 如果未使用 fork 服务器，则回复执行请求并接收执行命令
 		setup_control_pipes();
 		receive_handshake();
 #if !SYZ_EXECUTOR_USES_FORK_SERVER
@@ -632,7 +649,7 @@ int main(int argc, char** argv)
 		receive_execute();
 #endif
 	}
-
+	// 如果启用了覆盖率标志 (flag_coverage)，则根据配置创建和映射覆盖率数据结构
 	if (flag_coverage) {
 		int create_count = kCoverDefaultCount, mmap_count = create_count;
 		if (flag_delay_kcov_mmap) {
@@ -659,7 +676,7 @@ int main(int argc, char** argv)
 			cover_enable(&extra_cov, false, true);
 		}
 	}
-
+	// 根据不同的沙箱类型标志选择合适的沙箱设置函数，并获取执行状态
 	int status = 0;
 	if (flag_sandbox_none)
 		status = do_sandbox_none();
@@ -677,7 +694,8 @@ int main(int argc, char** argv)
 #endif
 	else
 		fail("unknown sandbox type");
-
+		// 如果使用了 fork 服务器，则输出退出状态并调用 doexit 函数退出。
+		// 否则，直接返回退出状态
 #if SYZ_EXECUTOR_USES_FORK_SERVER
 	fprintf(stderr, "loop exited with status %d\n", status);
 	// If an external sandbox process wraps executor, the out pipe will be closed

@@ -302,8 +302,11 @@ private:
 
 	void Start()
 	{
+		// 将状态变更为 Started 并重置 freshness_ 计数器
 		ChangeState(State::Started);
 		freshness_ = 0;
+		// 创建三个管道：req_pipe（请求管道）、resp_pipe（响应管道）、stdout_pipe（标准输出管道）。
+		// 如果创建失败，则调用 fail 函数并退出
 		int req_pipe[2];
 		if (pipe(req_pipe))
 			fail("pipe failed");
@@ -313,7 +316,10 @@ private:
 		int stdout_pipe[2];
 		if (pipe(stdout_pipe))
 			fail("pipe failed");
-
+		// 构建一个包含文件描述符映射的向量 fds，用于子进程的标准输入、输出、错误以及共享内存等。
+		// 包括请求管道读端 (req_pipe[0]) 映射到 STDIN_FILENO，
+		// 响应管道写端 (resp_pipe[1]) 映射到 STDOUT_FILENO，标准错误管道写端 (stdout_pipe[1]) 映射到 STDERR_FILENO，
+		// 以及其他共享内存和过滤器相关的文件描述符
 		std::vector<std::pair<int, int>> fds = {
 		    {req_pipe[0], STDIN_FILENO},
 		    {resp_pipe[1], STDOUT_FILENO},
@@ -323,12 +329,14 @@ private:
 		    {max_signal_fd_, kMaxSignalFd},
 		    {cover_filter_fd_, kCoverFilterFd},
 		};
+		//使用 process_.emplace 启动一个新的子进程，并传递命令行参数 (argv) 和文件描述符映射 (fds)
 		const char* argv[] = {bin_, "exec", nullptr};
 		process_.emplace(argv, fds);
-
+		//使用 Select::Prepare 准备响应管道和标准输出管道的读端，以便后续可以进行非阻塞I/O操作
 		Select::Prepare(resp_pipe[0]);
 		Select::Prepare(stdout_pipe[0]);
-
+		// 关闭父进程中不再需要的文件描述符（如管道的读端和写端）。
+		// 更新类成员变量 req_pipe_, resp_pipe_, stdout_pipe_ 以保存子进程通信所需的文件描述符
 		close(req_pipe[0]);
 		close(resp_pipe[1]);
 		close(stdout_pipe[1]);
@@ -340,7 +348,7 @@ private:
 		req_pipe_ = req_pipe[1];
 		resp_pipe_ = resp_pipe[0];
 		stdout_pipe_ = stdout_pipe[0];
-
+		//如果存在消息 (msg_)，则调用 Handshake 方法与管理器进行握手
 		if (msg_)
 			Handshake();
 	}
@@ -374,11 +382,15 @@ private:
 
 	void Execute()
 	{
+		// 检查当前状态是否为 State::Idle 且消息指针 msg_ 是否有效。
+		// 如果状态不对或消息无效，则调用 fail 函数并退出
 		if (state_ != State::Idle || !msg_)
 			fail("wrong state for execute");
-
+		// 记录一条调试信息，表明进程 id_ 开始执行请求 msg_->id
 		debug("proc %d: start executing request %llu\n", id_, static_cast<uint64>(msg_->id));
-
+		// 创建一个 rpc::ExecutingMessageRawT 对象 exec，并将请求ID、进程ID和尝试次数赋值给它。
+		// 如果存在等待时间（即 wait_start_ 不为0），则计算等待时长并将其设置到 exec 中，然后重置等待时间变量。
+		// 将 exec 设置到 raw 消息中，并通过 conn_.Send(raw) 发送给管理器，通知管理器开始执行该请求
 		rpc::ExecutingMessageRawT exec;
 		exec.id = msg_->id;
 		exec.proc_id = id_;
@@ -392,7 +404,10 @@ private:
 		rpc::ExecutorMessageRawT raw;
 		raw.msg.Set(std::move(exec));
 		conn_.Send(raw);
-
+		// 初始化 all_call_signal 和 all_extra_signal 变量。
+		// 遍历 msg_->all_signal 列表，将每个调用索引转换为位掩码并存储在 all_call_signal 中。
+		// 如果调用索引小于0，则设置 all_extra_signal 标志为 true。
+		// 确保调用索引在合理范围内（假设最大调用数为64）
 		uint64 all_call_signal = 0;
 		bool all_extra_signal = false;
 		for (int32_t call : msg_->all_signal) {
@@ -405,7 +420,9 @@ private:
 			else
 				all_call_signal |= 1ull << call;
 		}
+		// 将请求数据复制到共享内存中，限制数据大小不超过 kMaxInput
 		memcpy(req_shmem_.Mem(), msg_->data.data(), std::min(msg_->data.size(), kMaxInput));
+		// 构建一个 execute_req 结构体，包含魔数、请求ID、类型、执行标志、所有调用信号和额外信号标志
 		execute_req req{
 		    .magic = kInMagic,
 		    .id = static_cast<uint64>(msg_->id),
@@ -414,6 +431,9 @@ private:
 		    .all_call_signal = all_call_signal,
 		    .all_extra_signal = all_extra_signal,
 		};
+		// 记录当前时间为执行开始时间 exec_start_。
+		// 更新状态为 State::Executing。
+		// 将 execute_req 写入请求管道 req_pipe_，如果写入失败，则记录错误信息并调用 Restart 方法重新启动进程。
 		exec_start_ = current_time_ms();
 		ChangeState(State::Executing);
 		if (write(req_pipe_, &req, sizeof(req)) != sizeof(req)) {
@@ -539,15 +559,19 @@ public:
 	    : conn_(conn),
 	      vm_index_(vm_index)
 	{
+		// 通过 Handshake() 方法与管理器进行握手，确定需要启动的子进程数量
 		int num_procs = Handshake();
+		// 根据 num_procs 初始化进程ID池
 		proc_id_pool_.emplace(num_procs);
+		// 获取 max_signal_ 和 cover_filter_ 对象的文件描述符
 		int max_signal_fd = max_signal_ ? max_signal_->FD() : -1;
 		int cover_filter_fd = cover_filter_ ? cover_filter_->FD() : -1;
+		// 根据 num_procs 创建指定数量的 Proc 实例，并将其添加到 procs_ 向量中
 		for (int i = 0; i < num_procs; i++)
 			procs_.emplace_back(new Proc(conn, bin, *proc_id_pool_, restarting_, corpus_triaged_,
 						     max_signal_fd, cover_filter_fd, use_cover_edges_, is_kernel_64_bit_, slowdown_,
 						     syscall_timeout_ms_, program_timeout_ms_));
-
+		//  无限循环调用 Loop() 方法处理请求和维护子进程状态
 		for (;;)
 			Loop();
 	}
@@ -593,15 +617,23 @@ private:
 
 	void Loop()
 	{
+		// 创建一个 Select 对象，用于管理多个文件描述符的就绪状态。
+		// 将管理器连接的文件描述符 (conn_.FD()) 注册到 Select 对象中。
+		// 遍历所有子进程 (procs_) 并将它们的文件描述符注册到 Select 对象中。
 		Select select;
 		select.Arm(conn_.FD());
 		for (auto& proc : procs_)
 			proc->Arm(select);
 		// Wait for ready host connection and subprocess pipes.
 		// Timeout is for terminating hanged subprocesses.
+		// 调用 select.Wait(1000) 等待文件描述符变为就绪状态，超时时间为1秒（1000毫秒），以防止挂起的子进程导致死锁。
+		// 获取当前时间戳 now，用于后续的时间计算
 		select.Wait(1000);
 		uint64 now = current_time_ms();
-
+		// 检查管理器连接的文件描述符是否就绪。
+		// 如果就绪，则接收一条消息并解析其类型。
+		// 根据消息类型调用相应的处理函数（如 Handle 函数），处理不同类型的消息（执行请求、信号更新、语料库分类等）。
+		// 如果收到未知类型的消息，则输出错误信息并退出
 		if (select.Ready(conn_.FD())) {
 			rpc::HostMessageRawT raw;
 			conn_.Recv(raw);
@@ -616,7 +648,10 @@ private:
 			else
 				failmsg("unknown host message type", "type=%d", static_cast<int>(raw.msg.type));
 		}
-
+		// 遍历所有子进程，检查它们的文件描述符是否就绪。
+		// 调用 proc->Ready(select, now, requests_.empty()) 更新子进程状态，并根据当前时间和请求队列的状态进行相应处理。
+		// 如果请求队列不为空，则尝试从队列中取出第一个请求，并调用 proc->Execute 执行该请求。
+		// 如果执行成功，则从请求队列中移除该请求
 		for (auto& proc : procs_) {
 			proc->Ready(select, now, requests_.empty());
 			if (!requests_.empty()) {
@@ -624,7 +659,8 @@ private:
 					requests_.pop_front();
 			}
 		}
-
+		// 检查 restarting_ 变量的值是否合理（大于等于0且不超过子进程的数量）。
+		// 如果不合理，则输出错误信息并退出
 		if (restarting_ < 0 || restarting_ > static_cast<int>(procs_.size()))
 			failmsg("bad restarting", "restarting=%d", restarting_);
 	}
@@ -714,6 +750,8 @@ private:
 
 	void Handle(rpc::ExecRequestRawT& msg)
 	{
+		// 记录一条调试信息，包含请求的ID、类型、标志、环境标志、执行标志以及数据大小。
+		// 这有助于跟踪和调试接收到的执行请求
 		debug("recv exec request %llu: type=%llu flags=0x%llx env=0x%llx exec=0x%llx size=%zu\n",
 		      static_cast<uint64>(msg.id),
 		      static_cast<uint64>(msg.type),
@@ -721,14 +759,20 @@ private:
 		      static_cast<uint64>(msg.exec_opts->env_flags()),
 		      static_cast<uint64>(msg.exec_opts->exec_flags()),
 		      msg.data.size());
+		//   检查请求类型是否为 Binary（假设 rpc::RequestType::Binary 是一个枚举值）。
+		//   如果是二进制类型的请求，则调用 ExecuteBinary 方法处理该请求，并立即返回，不再继续处理其他子进程
 		if (msg.type == rpc::RequestType::Binary) {
 			ExecuteBinary(msg);
 			return;
 		}
+		// 遍历所有子进程 (procs_)。
+		// 对每个子进程调用 Execute 方法，尝试执行当前请求。
+		// 如果某个子进程成功执行了请求（即 Execute 返回 true），则立即返回，停止进一步处理
 		for (auto& proc : procs_) {
 			if (proc->Execute(msg))
 				return;
 		}
+		// 如果没有子进程能够立即执行该请求，则将其移动到请求队列 requests_ 中，等待后续处理
 		requests_.push_back(std::move(msg));
 	}
 
@@ -763,25 +807,37 @@ private:
 
 	void ExecuteBinary(rpc::ExecRequestRawT& msg)
 	{
+		// 创建一个 rpc::ExecutingMessageRawT 对象 exec，并将请求的ID赋值给它。
+		// 将 exec 对象设置到 raw 消息中，并通过 conn_.Send(raw) 发送给管理器，通知管理器开始执行该请求
 		rpc::ExecutingMessageRawT exec;
 		exec.id = msg.id;
 		rpc::ExecutorMessageRawT raw;
 		raw.msg.Set(std::move(exec));
 		conn_.Send(raw);
-
+		// 定义一个模板字符串 dir_template，用于生成临时目录名称。
+		// 使用 mkdtemp 函数创建一个临时目录，并返回其路径。
+		// 如果创建失败，则调用 fail 函数并退出。
+		// 使用 chmod 函数将临时目录的权限设置为 0777（即所有用户可读、写、执行），以确保后续操作不会因为权限问题而失败
 		char dir_template[] = "syz-bin-dirXXXXXX";
 		char* dir = mkdtemp(dir_template);
 		if (dir == nullptr)
 			fail("mkdtemp failed");
 		if (chmod(dir, 0777))
 			fail("chmod failed");
+		// 调用 ExecuteBinaryImpl 方法实际执行二进制文件，并传入请求消息和临时目录路径。
+		// ExecuteBinaryImpl 返回一个包含错误信息和输出结果的元组 [err, output]。
+		// 如果有错误信息（即 err 不为空），则附加详细的错误描述（包括错误码和错误信息）到 err 字符串中
 		auto [err, output] = ExecuteBinaryImpl(msg, dir);
 		if (!err.empty()) {
 			char tmp[64];
 			snprintf(tmp, sizeof(tmp), " (errno %d: %s)", errno, strerror(errno));
 			err += tmp;
 		}
+		// 调用 remove_dir 函数删除临时目录及其内容，确保没有残留的临时文件
 		remove_dir(dir);
+		// 创建一个 rpc::ExecResultRawT 对象 res，用于存储执行结果。
+		// 将请求的ID、错误信息和输出结果分别赋值给 res。
+		// 将 res 设置到 raw 消息中，并通过 conn_.Send(raw) 发送给管理器，报告执行结果
 		rpc::ExecResultRawT res;
 		res.id = msg.id;
 		res.error = std::move(err);
@@ -886,15 +942,19 @@ static void FatalHandler(int sig, siginfo_t* info, void* ucontext)
 
 static void runner(char** argv, int argc)
 {
+	// 首先检查命令行参数的数量是否为5个（包括程序名本身）。如果不是，则输出使用说明并退出
 	if (argc != 5)
 		fail("usage: syz-executor runner <index> <manager-addr> <manager-port>");
+	// 从第三个参数（argv[2]）解析出虚拟机索引（vm_index），确保其是一个有效的整数。
+	// 如果解析失败或值小于0，输出错误信息并退出
 	char* endptr = nullptr;
 	int vm_index = strtol(argv[2], &endptr, 10);
 	if (vm_index < 0 || *endptr != 0)
 		failmsg("failed to parse VM index", "str='%s'", argv[2]);
+	// 第四个和第五个参数分别作为管理器的地址（manager_addr）和端口（manager_port）
 	const char* const manager_addr = argv[3];
 	const char* const manager_port = argv[4];
-
+	//使用 setrlimit 函数设置最大打开文件描述符数（RLIMIT_NOFILE），以确保有足够的文件描述符供后续操作使用
 	struct rlimit rlim;
 	rlim.rlim_cur = rlim.rlim_max = kFdLimit;
 	if (setrlimit(RLIMIT_NOFILE, &rlim))
@@ -904,14 +964,19 @@ static void runner(char** argv, int argc)
 	// In particular we want to ignore SIGPIPE, but also everything else since
 	// test processes manage to send random signals using tracepoints with bpf programs.
 	// This is not a bullet-proof protection, but it won't harm either.
+	// 循环遍历所有可能的信号（0到64），将其处理程序设置为忽略（SIG_IGN），特别是忽略 SIGPIPE 信号，防止在某些情况下意外终止进程
 	for (int sig = 0; sig <= 64; sig++)
 		signal(sig, SIG_IGN);
+	// 设置 SIGINT 和 SIGTERM 信号的处理函数为 SigintHandler，以便在接收到中断或终止信号时能够正确处理。
+	// 设置 SIGCHLD 信号的处理函数为 SigchldHandler，用于处理子进程结束后的清理工作
 	if (signal(SIGINT, SigintHandler) == SIG_ERR)
 		fail("signal(SIGINT) failed");
 	if (signal(SIGTERM, SigintHandler) == SIG_ERR)
 		fail("signal(SIGTERM) failed");
 	if (signal(SIGCHLD, SigchldHandler) == SIG_ERR)
 		fail("signal(SIGCHLD) failed");
+	// 对于一些可能导致程序崩溃的严重信号（如 SIGSEGV, SIGBUS, SIGILL, SIGFPE），
+	// 设置自定义的信号处理器 FatalHandler，通过 sigaction 函数实现更细粒度的信号处理
 	struct sigaction act = {};
 	act.sa_flags = SA_SIGINFO;
 	act.sa_sigaction = FatalHandler;
@@ -919,13 +984,13 @@ static void runner(char** argv, int argc)
 		if (sigaction(sig, &act, nullptr))
 			failmsg("sigaction failed", "sig=%d", sig);
 	}
-
+	// 创建一个到管理器的连接对象 conn，使用前面解析出的管理器地址和端口
 	Connection conn(manager_addr, manager_port);
-
+	// 确保子进程中文件描述符的重新映射逻辑正常工作，通过 dup 函数复制连接对象的文件描述符直到达到预设的最大文件描述符数 kCoverFilterFd
 	// This is required to make Subprocess fd remapping logic work.
 	// kCoverFilterFd is the largest fd we set in the child processes.
 	for (int fd = conn.FD(); fd < kCoverFilterFd;)
 		fd = dup(fd);
-
+	// 最后，调用 Runner 函数，传入连接对象、虚拟机索引和命令行参数的第一个元素（通常是程序名），开始执行具体的测试任务
 	Runner(conn, vm_index, argv[0]);
 }
