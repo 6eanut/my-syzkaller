@@ -44,11 +44,22 @@ type Fuzzer struct {
 
 func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 	target *prog.Target) *Fuzzer {
+	// 如果配置中的 NewInputFilter 未设置，则提供一个默认实现。
+	// 默认实现接受所有系统调用（返回 true），表示不对新输入进行过滤
 	if cfg.NewInputFilter == nil {
 		cfg.NewInputFilter = func(call string) bool {
 			return true
 		}
 	}
+	// 创建一个新的 Fuzzer 对象 f，并初始化其各个字段：
+	// Stats：调用 newStats(target) 初始化统计信息对象，用于记录模糊测试过程中的各种指标。
+	// Config：将传入的配置对象 cfg 赋值给 f.Config。
+	// Cover：调用 newCover() 初始化覆盖率管理对象，用于跟踪程序执行过程中覆盖的代码路径。
+	// ctx：将上下文对象 ctx 赋值给 f.ctx，用于控制模糊测试器的生命周期。
+	// rnd：将随机数生成器 rnd 赋值给 f.rnd，用于在生成和变异测试用例时引入随机性。
+	// target：将目标系统对象 target 赋值给 f.target，表示当前模糊测试的目标系统。
+	// runningJobs：初始化一个空的映射表，用于跟踪正在运行的任务。
+	// ctRegenerate：创建一个通道（chan struct{}），用于通知后台任务重新生成选择表（ChoiceTable）。如果已经有任务在重新生成选择表，则可以忽略重复的通知。
 	f := &Fuzzer{
 		Stats:  newStats(target),
 		Config: cfg,
@@ -63,9 +74,15 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 		// regenerating the table, we don't want to repeat it right away.
 		ctRegenerate: make(chan struct{}),
 	}
+	// 调用 newExecQueues(f) 方法初始化执行队列（execQueues），定义测试用例的选择和调度策略
 	f.execQueues = newExecQueues(f)
+	// 调用 updateChoiceTable(nil) 方法初始化选择表（ChoiceTable），该表指导生成器在构建系统调用序列时如何选择系统调用及其参数。
 	f.updateChoiceTable(nil)
+	// 启动一个 Goroutine 调用 f.choiceTableUpdater() 方法，定期更新选择表。
+	// 这个后台任务会根据语料库的变化动态调整选择表，确保生成的测试用例能够适应目标系统的最新行为。
 	go f.choiceTableUpdater()
+	// 如果配置中启用了调试模式（cfg.Debug），则启动一个 Goroutine 调用 f.logCurrentStats() 方法，定期记录当前的统计信息。
+	// 这有助于开发者监控模糊测试器的运行状态。
 	if cfg.Debug {
 		go f.logCurrentStats()
 	}
@@ -81,6 +98,11 @@ type execQueues struct {
 }
 
 func newExecQueues(fuzzer *Fuzzer) execQueues {
+	// 创建一个 execQueues 对象 ret，并初始化其子队列：
+	// triageCandidateQueue：使用动态排序策略（queue.DynamicOrder），优先处理可能带来新覆盖率的测试用例。
+	// candidateQueue：使用普通队列（queue.Plain），存储待执行的普通测试用例。
+	// triageQueue：使用动态排序策略（queue.DynamicOrder），用于进一步分析和确认潜在漏洞的测试用例。
+	// smashQueue：使用普通队列（queue.Plain），存储专门用于破坏性测试的测试用例。
 	ret := execQueues{
 		triageCandidateQueue: queue.DynamicOrder(),
 		candidateQueue:       queue.Plain(),
@@ -88,6 +110,9 @@ func newExecQueues(fuzzer *Fuzzer) execQueues {
 		smashQueue:           queue.Plain(),
 	}
 	// Alternate smash jobs with exec/fuzz to spread attention to the wider area.
+	// 定义变量 skipQueue，表示 smashQueue 在调度顺序中的间隔频率。
+	// 默认情况下，smashQueue 每 3 次调度插入一次。
+	// 如果启用了补丁测试模式（fuzzer.Config.PatchTest），则将间隔频率降低为 2，增加 smashQueue 的调度频率。
 	skipQueue := 3
 	if fuzzer.Config.PatchTest {
 		// When we do patch fuzzing, we do not focus on finding and persisting
@@ -96,6 +121,12 @@ func newExecQueues(fuzzer *Fuzzer) execQueues {
 		skipQueue = 2
 	}
 	// Sources are listed in the order, in which they will be polled.
+	// 使用 queue.Order 方法定义队列的调度顺序：
+	// triageCandidateQueue：优先处理可能带来新覆盖率的测试用例。
+	// candidateQueue：处理普通的测试用例。
+	// triageQueue：进一步分析和确认潜在漏洞的测试用例。
+	// queue.Alternate(ret.smashQueue, skipQueue)：以指定的间隔频率调度 smashQueue，用于破坏性测试。
+	// queue.Callback(fuzzer.genFuzz)：通过调用 fuzzer.genFuzz 方法动态生成新的测试用例。
 	ret.source = queue.Order(
 		ret.triageCandidateQueue,
 		ret.candidateQueue,
@@ -265,6 +296,8 @@ func signalPrio(p *prog.Prog, info *flatrpc.CallInfo, call int) (prio uint8) {
 }
 
 func (fuzzer *Fuzzer) genFuzz() *queue.Request {
+	// mutateRate 是决定是否进行变异的概率值，默认为 0.95，即有 95% 的概率对现有程序进行变异。
+	// 如果配置中没有启用覆盖率（Coverage），则将 mutateRate 设置为 0.5。这是因为没有覆盖率信号时，模糊测试器无法有效评估程序的探索性，因此需要更频繁地生成新程序以增加多样性
 	// Either generate a new input or mutate an existing one.
 	mutateRate := 0.95
 	if !fuzzer.Config.Coverage {
@@ -273,6 +306,10 @@ func (fuzzer *Fuzzer) genFuzz() *queue.Request {
 		mutateRate = 0.5
 	}
 	var req *queue.Request
+	// 使用 fuzzer.rand() 获取一个随机数生成器 rnd。
+	// 根据随机数判断是否进行变异：
+	// 如果随机数小于 mutateRate，调用 mutateProgRequest 方法对现有程序进行变异，并返回变异后的请求。
+	// 如果变异失败（即 req == nil），则调用 genProgRequest 方法生成一个全新的程序。	
 	rnd := fuzzer.rand()
 	if rnd.Float64() < mutateRate {
 		req = mutateProgRequest(fuzzer, rnd)
@@ -280,12 +317,16 @@ func (fuzzer *Fuzzer) genFuzz() *queue.Request {
 	if req == nil {
 		req = genProgRequest(fuzzer, rnd)
 	}
+	// 如果配置启用了碰撞测试（Collide），并且随机数满足条件（rnd.Intn(3) == 0，即约 1/3 的概率），则对生成的程序进行碰撞测试。
+	// 碰撞测试通过 randomCollide 函数实现，目的是生成可能引发竞争条件或其他并发问题的测试用例
 	if fuzzer.Config.Collide && rnd.Intn(3) == 0 {
 		req = &queue.Request{
 			Prog: randomCollide(req.Prog, rnd),
 			Stat: fuzzer.statExecCollide,
 		}
 	}
+	// 调用 fuzzer.prepare 方法对请求进行进一步处理（如设置初始状态、标记统计信息等）。
+	// 最后返回生成的请求 req
 	fuzzer.prepare(req, 0, 0)
 	return req
 }
@@ -390,16 +431,26 @@ func (fuzzer *Fuzzer) choiceTableUpdater() {
 }
 
 func (fuzzer *Fuzzer) ChoiceTable() *prog.ChoiceTable {
+	// 调用 fuzzer.Config.Corpus.Programs() 获取当前语料库中的所有程序。
+	// 这些程序是之前执行过的有效测试用例，反映了目标系统的已知行为。
 	progs := fuzzer.Config.Corpus.Programs()
 
+	// 使用互斥锁（ctMu）保护对选择表（fuzzer.ct）的访问。
+	// 确保在多线程环境中不会出现竞争条件。
 	fuzzer.ctMu.Lock()
 	defer fuzzer.ctMu.Unlock()
 
+	// 定义变量 regenerateEveryProgs，表示每隔多少个程序需要重新生成一次选择表。
+	// 如果语料库中的程序数量少于 100，则将重新生成频率降低为 33。
+	// 这是为了在语料库较小时更频繁地更新选择表，以便更快地适应新的输入模式。
 	// There were no deep ideas nor any calculations behind these numbers.
 	regenerateEveryProgs := 333
 	if len(progs) < 100 {
 		regenerateEveryProgs = 33
 	}
+	// 检查自上次生成选择表以来，语料库中新增的程序数量是否超过了 regenerateEveryProgs。
+	// 如果满足条件，则尝试向通道 fuzzer.ctRegenerate 发送一个信号，通知后台任务重新生成选择表。
+	// 如果通道已满（即已经有信号在等待处理），则忽略此次发送，因为后台任务可能已经在重新生成选择表。
 	if fuzzer.ctProgs+regenerateEveryProgs < len(progs) {
 		select {
 		case fuzzer.ctRegenerate <- struct{}{}:
@@ -408,6 +459,8 @@ func (fuzzer *Fuzzer) ChoiceTable() *prog.ChoiceTable {
 			// It means that we're already regenerating the table.
 		}
 	}
+	// 返回当前的选择表（fuzzer.ct）。
+	// 如果选择表尚未生成或正在重新生成，则返回的是上一个版本的选择表。
 	return fuzzer.ct
 }
 

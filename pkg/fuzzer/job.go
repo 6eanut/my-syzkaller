@@ -42,9 +42,26 @@ func (ji *JobInfo) ID() string {
 }
 
 func genProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
+	// 调用 fuzzer.target.Generate 方法生成一个新的系统调用序列 p。
+	// 参数说明：
+	// rnd：随机数生成器，用于在生成过程中引入随机性。
+	// prog.RecommendedCalls：推荐的系统调用集合，表示生成的程序中可以使用的系统调用。
+	// fuzzer.ChoiceTable()：选择表（Choice Table），包含生成程序时的各种约束条件和偏好设置。
+	// 作用：
+	// fuzzer.target.Generate 是目标系统的核心生成器，负责根据目标系统的 API 和约束条件生成有效的系统调用序列。
+	// 它会基于推荐的系统调用集合和选择表，逐步构建一个符合语法规则的程序。
 	p := fuzzer.target.Generate(rnd,
 		prog.RecommendedCalls,
 		fuzzer.ChoiceTable())
+	// 将生成的系统调用序列 p 封装为 queue.Request 对象。
+	// 字段说明：
+	// Prog：生成的系统调用序列。
+	// ExecOpts：执行选项，通过 setFlags(flatrpc.ExecFlagCollectSignal) 设置。
+	// flatrpc.ExecFlagCollectSignal 表示在执行程序时收集信号（如覆盖率信息）。
+	// Stat：统计信息，指向 fuzzer.statExecGenerate，用于记录生成的测试用例的相关统计。
+	// 作用：
+	// queue.Request 是模糊测试器中用于表示测试用例的核心结构体。
+	// 它不仅包含了程序本身（Prog），还包含了执行选项（ExecOpts）和统计信息（Stat），便于后续的执行、分析和统计。
 	return &queue.Request{
 		Prog:     p,
 		ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
@@ -474,6 +491,11 @@ func (job *smashJob) getInfo() *JobInfo {
 }
 
 func randomCollide(origP *prog.Prog, rnd *rand.Rand) *prog.Prog {
+	// 触发条件：以 20% 的概率（rnd.Intn(5) == 0）执行旧式碰撞测试。
+	// 逻辑：
+	// 调用 prog.DoubleExecCollide 方法对原始程序 origP 进行碰撞测试。
+	// 如果成功生成新的碰撞程序，则直接返回该程序。
+	// 作用：DoubleExecCollide 通常会尝试将某些系统调用重复执行两次，或者调整其执行顺序，从而模拟并发环境下的行为。
 	if rnd.Intn(5) == 0 {
 		// Old-style collide with a 20% probability.
 		p, err := prog.DoubleExecCollide(origP, rnd)
@@ -481,6 +503,11 @@ func randomCollide(origP *prog.Prog, rnd *rand.Rand) *prog.Prog {
 			return p
 		}
 	}
+	// 触发条件：以 20% 的概率（rnd.Intn(4) == 0）执行随机复制调用操作。
+	// 逻辑：
+	// 调用 prog.DupCallCollide 方法对原始程序 origP 进行处理。
+	// 该方法可能会随机选择某些系统调用并将其复制到程序中，从而增加并发性或复杂性。
+	// 作用：通过复制调用，可以模拟多个线程同时执行相同操作的情况，有助于发现竞争条件。
 	if rnd.Intn(4) == 0 {
 		// Duplicate random calls with a 20% probability (25% * 80%).
 		p, err := prog.DupCallCollide(origP, rnd)
@@ -488,6 +515,13 @@ func randomCollide(origP *prog.Prog, rnd *rand.Rand) *prog.Prog {
 			return p
 		}
 	}
+	// 异步化：
+	// 调用 prog.AssignRandomAsync 方法对原始程序 origP 进行异步化处理。
+	// 异步化操作会随机调整某些系统调用的执行顺序或线程分配，从而模拟并发环境。
+	// 重放：
+	// 如果随机数满足条件（rnd.Intn(2) != 0，即 50% 的概率），调用 prog.AssignRandomRerun 方法对程序进行重放处理。
+	// 重放操作可能会重新安排某些调用的执行顺序，进一步增加并发性。
+	// 返回值：最终返回经过处理的程序 p。
 	p := prog.AssignRandomAsync(origP, rnd)
 	if rnd.Intn(2) != 0 {
 		prog.AssignRandomRerun(p, rnd)
