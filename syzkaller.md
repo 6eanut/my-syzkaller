@@ -126,4 +126,31 @@ executor % tree
       * 调用mutateProgRequest来对现有Prog进行变异
       * 调用genProgRequest生成全新的Prog
         * 会调用prog/generation.go中的Generate函数
+          * Generate函数会调用generateCall函数
       * 最后调用randomCollide来对前面生成的Prog做处理得到碰撞测试后的Prog
+
+---
+
+prog下的主要文件：
+
+* prio.go
+
+用于计算call-to-call的优先级。对于一个系统调用对(X,Y)，优先级指的是对于包含了X的程序，如果加入了Y，程序出现新的代码覆盖的可能性。当前包含静态和动态两种算法。静态算法基于参数类型的分析，动态算法基于语料库。
+
+* mutation.go
+
+用于对程序进行变异。比如，将当前程序的一部分与语料库中另一个随机选择的程序的部分拼接起来，生成一个新的程序；随机去除程序中的一个call；对程序中的某个随机系统调用的参数进行变异操作等
+
+* generation.go
+
+用于生成一个包含指定数量的系统调用的程序，同时可以指定可选的系统调用集。
+
+* minimization.go
+
+用于对程序进行简化，删除无关的系统调用和对单个系统调用进行简化，并且保持等价。
+
+---
+
+问题1：syzkaller是怎么在每轮测试前筛选种子的
+
+问题2：种子执行后，syzkaller怎么对他们排序

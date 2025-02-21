@@ -587,6 +587,9 @@ func (r *randGen) nOutOf(n, outOf int) bool {
 }
 
 func (r *randGen) generateCall(s *state, p *Prog, insertionPoint int) []*Call {
+	// 如果 insertionPoint > 0，则从程序已有的调用中随机选择一个作为参考点（insertionCall）。
+	// 检查该调用是否允许生成（!insertionCall.Attrs.NoGenerate）。如果允许，则将其 ID 设置为 biasCall，否则保持默认值 -1。
+	// 这一步的作用是引入某种“偏置”，以便生成的调用与已有调用相关联
 	biasCall := -1
 	if insertionPoint > 0 {
 		// Choosing the base call is based on the insertion point of the new calls sequence.
@@ -596,8 +599,12 @@ func (r *randGen) generateCall(s *state, p *Prog, insertionPoint int) []*Call {
 			biasCall = insertionCall.ID
 		}
 	}
+	// 调用 s.ct.choose 方法，基于随机数生成器 r.Rand 和偏置调用 biasCall，选择一个系统调用的索引 idx。
+	// 使用选定的索引 idx 获取目标系统调用元信息（meta），即 r.target.Syscalls[idx]。
 	idx := s.ct.choose(r.Rand, biasCall)
 	meta := r.target.Syscalls[idx]
+	// 调用 r.generateParticularCall 方法，基于当前状态 s 和选定的系统调用元信息 meta，生成具体的调用序列。
+	// 返回生成的调用列表。
 	return r.generateParticularCall(s, meta)
 }
 

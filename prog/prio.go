@@ -267,23 +267,36 @@ func (ct *ChoiceTable) Generatable(call int) bool {
 }
 
 func (ct *ChoiceTable) choose(r *rand.Rand, bias int) int {
+	// 使用 r.Intn(100) 生成一个 [0, 99] 范围内的随机数。
+	// 如果该随机数小于 5（即有 5% 的概率），则完全随机选择一个系统调用的 ID 并返回。
+	// 这一步的作用是引入一定的随机性，避免过于依赖偏置值。
 	if r.Intn(100) < 5 {
 		// Let's make 5% decisions totally at random.
 		return ct.calls[r.Intn(len(ct.calls))].ID
 	}
+	// 如果传入的 bias 小于 0（表示未指定偏置值），则随机选择一个系统调用的 ID 作为新的偏置值。
 	if bias < 0 {
 		bias = ct.calls[r.Intn(len(ct.calls))].ID
 	}
+	// 调用 ct.Generatable(bias) 方法检查偏置值对应的系统调用是否可生成。
+	// 如果不可生成，则打印错误信息并触发 panic，终止程序运行。	
 	if !ct.Generatable(bias) {
 		fmt.Printf("bias to disabled or non-generatable syscall %v\n", ct.target.Syscalls[bias].Name)
 		panic("disabled or non-generatable syscall")
 	}
+	// 获取与偏置值 bias 对应的权重分布数组 run。
+	// 计算权重分布的总和 runSum。
+	// 使用 r.Intn(runSum) 生成一个随机数 x，范围为 [0, runSum-1]，然后加 1 确保 x 在 [1, runSum] 范围内。
+	// 使用 sort.Search 方法在 run 数组中查找第一个满足 run[i] >= x 的索引 res。
+	// 这一步的作用是基于权重分布进行加权随机选择。
 	run := ct.runs[bias]
 	runSum := int(run[len(run)-1])
 	x := int32(r.Intn(runSum) + 1)
 	res := sort.Search(len(run), func(i int) bool {
 		return run[i] >= x
 	})
+	// 再次检查最终选择的索引 res 是否对应一个可生成的系统调用。
+	// 如果不可生成，则触发 panic，终止程序运行。
 	if !ct.Generatable(res) {
 		panic("selected disabled or non-generatable syscall")
 	}
