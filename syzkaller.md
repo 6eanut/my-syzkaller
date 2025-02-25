@@ -1,8 +1,6 @@
-# Syzkaller
-
 Syzkaller的运行由命令 `./bin/syz-manager -config=fuzz.cfg`来执行，故而syz-manager二进制可执行程序是分析的入手点
 
-## syz-manager
+### syz-manager
 
 ```
 manager: descriptions
@@ -36,7 +34,7 @@ syz-manager % tree
 
 [代码阅读批注](https://github.com/6eanut/syzkaller/commit/70cf61f3f5b48be035a907035319a55d29adae15)
 
-## syz-executor
+### syz-executor
 
 通过上面的分析，可以知道，syz-manager会通过ssh在虚拟机里面执行syz-executor这个二进制可执行程序，故而这是后续的分析着手点
 

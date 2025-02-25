@@ -10,7 +10,7 @@ import (
 
 type Prog struct {
 	Target   *Target
-	Calls    []*Call
+	Calls    []*Call //系统调用序列
 	Comments []string
 
 	// Was deserialized using Unsafe mode, so can do unsafe things.

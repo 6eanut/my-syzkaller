@@ -12,9 +12,9 @@ import (
 )
 
 type ProgramsList struct {
-	progs    []*prog.Prog
+	progs    []*prog.Prog //种子
 	sumPrios int64
-	accPrios []int64
+	accPrios []int64 //累积优先级
 }
 
 func (pl *ProgramsList) chooseProgram(r *rand.Rand) *prog.Prog {

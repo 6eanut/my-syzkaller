@@ -34,6 +34,22 @@ type Corpus struct {
 	focusAreas []*focusAreaState
 }
 
+type Corpus struct {
+	ctx      context.Context
+	mu       sync.RWMutex
+	progsMap map[string]*Item
+	signal   signal.Signal
+	cover    cover.Cover
+	updates  chan<- NewItemEvent
+	*ProgramsList //种子集合
+	StatProgs  *stat.Val
+	StatSignal *stat.Val
+	StatCover  *stat.Val
+	focusAreas []*focusAreaState
+}
+
+
+
 type focusAreaState struct {
 	FocusArea
 	*ProgramsList

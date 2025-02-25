@@ -200,8 +200,8 @@ func normalizePrios(prios [][]int32) {
 // based on call-to-call priorities and a set of enabled and generatable syscalls.
 type ChoiceTable struct {
 	target *Target
-	runs   [][]int32
-	calls  []*Syscall
+	runs   [][]int32 //优先级
+	calls  []*Syscall //系统调用集合
 }
 
 func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool) *ChoiceTable {
