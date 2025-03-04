@@ -452,7 +452,7 @@ foo(k ptr[in, s1], l ptr[in, array[int8]])
 
 ## Integer Constants
 
-整型常量可以指定为十进制字面值、以 `0x`为前缀的十六进制字面值、以`'`包围的字符字面值，或者从内核头文件中提取或由define指令定义的符号常量。例如:
+整型常量可以指定为十进制字面值、以 `0x`为前缀的十六进制字面值、以 `'`包围的字符字面值，或者从内核头文件中提取或由define指令定义的符号常量。例如:
 
 ```
 # 表示一个值为 10 的整数常量，const[-10] 表示一个值为 -10 的整数常量
@@ -472,3 +472,140 @@ define MY_PATH_MAX	PATH_MAX + 2
 ## Conditional fields
 
 ### In structures
+
+条件字段允许根据某些条件动态地决定结构体中的某个字段是否应该被包含或省略：
+
+```
+header_fields {
+  magic       const[0xabcd, int16]
+  haveInteger int8
+} [packed]
+
+packet {
+  header  header_fields
+  # 如果 header.haveInteger == 1，则 integer 字段会被包含；否则，integer 字段会被忽略
+  integer int64  (if[value[header:haveInteger] == 0x1])
+  body    array[int8]
+} [packed]
+
+some_call(a ptr[in, packet])
+```
+
+当条件字段存在时，结构体的内存布局会根据条件动态调整，例如：
+
+* 当 `header.haveInteger == 1`：
+
+```
+| header_files.magic = 0xabcd | header_files.haveInteger = 0x1 | integer | body |
+```
+
+* 当 `header.haveInteger != 1`：
+
+```
+| header_files.magic = 0xabcd | header_files.haveInteger = 0x0 | body |
+```
+
+> 每个条件字段都假定为可变长度，该字段所属的结构体也是如此。当可变长度字段出现在结构体中间时，必须用`[packed]`标记该结构体。
+
+禁止使用位域的条件，但可以在条件中引用位域：
+
+```
+struct {
+  f0 int
+  f1 int:3 (if[value[f0] == 0x1])  # It will not compile.
+}
+
+struct {
+  f0 int:1
+  f1 int:7
+  f2 int   (if[value[f0] == value[f1]])
+} [packed]
+```
+
+### In unions
+
+```
+struct {
+  type int
+  body alternatives
+}
+
+alternatives [
+  int     int64 (if[value[struct:type] == 0x1])
+  arr     array[int64, 5] (if[value[struct:type] == 0x2])
+  default int32
+] [varlen]
+
+some_call(a ptr[in, struct])
+```
+
+在这个例子中，将根据 `type`字段的值选择 `union`选项。例如，如果 `type`是 `0x1`，那么它可以是 `int`或 `default`；如果 `type`是 `0x2`，那么它可以是 `arr`或 `default`；如果 `type`既不是 `0x1`也不是 `0x2`，那么它只可能是 `default`。
+
+为了确保始终可以构造`union`，最后一个`union`字段必须始终没有条件。因此，以下定义将无法编译：
+
+```
+alternatives [
+  int int64 (if[value[struct:type] == 0x1])
+  arr array[int64, 5] (if[value[struct:type] == 0x1])
+] [varlen]
+```
+
+### Expression Syntax
+
+目前，只支持==，!=，&，||操作符。以下是一些例子：
+
+```
+sub_struct {
+  f0 int
+  # Reference a field in a parent struct.
+  f1 int (if[value[struct:f2]]) # Same as if[value[struct:f2] != 0].
+}
+
+struct {
+  f2 int
+  f3 sub_struct
+  f4 int (if[value[f2] == 0x2]) # Reference a sibling field.
+  f5 int (if[value[f3:f0] == 0x1]) # Reference a nested field.
+  f6 int (if[value[f3:f0] == 0x1 || value[f3:f0] == 0x2]) # Reference a nested field which either equals to 0x1 or 0x2.
+} [packed]
+
+call(a ptr[in, struct])
+```
+
+引用的字段必须是整数类型，并且在它的路径中不能有条件字段。例如，以下描述将无法编译：
+
+```
+struct {
+  f0 int
+  f1 int (if[value[f0] == 0x1])
+  f2 int (if[value[f1] == 0x1])
+}
+```
+
+也可以在表达式中引用常量：
+
+```
+struct {
+  f0 int
+  f1 int
+  f2 int (if[value[f0] & SOME_CONST == OTHER_CONST])
+}
+```
+
+## Meta
+
+`meta` 指令用于在描述文件中指定元信息（meta-information），这些元信息会影响整个文件的行为。通过 `meta` 指令，可以控制文件的提取行为、适用的架构范围等。以下是一些用法：
+
+```
+# 告诉make extract不extract此文件的常量
+meta noextract
+# 限制该文件仅适用于指定的架构
+meta arches["arch1", "arch2"]
+```
+
+## Misc
+
+* `include` 指令用于引用 Linux 内核头文件
+* `incdir` 指令用于指定自定义的 Linux 内核头文件目录
+* `define` 指令用于定义符号常量值
+* 有pseudo system calls
