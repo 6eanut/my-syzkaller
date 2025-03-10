@@ -1014,7 +1014,7 @@ func (mgr *Manager) uploadReproAssets(repro *repro.Result) []dashapi.NewAsset {
 	})
 	return ret
 }
-
+// 1.过滤，2.已存在？3.加入
 func (mgr *Manager) corpusInputHandler(updates <-chan corpus.NewItemEvent) {
 	for update := range updates {
 		if len(update.NewCover) != 0 && mgr.coverFilters.ExecutorFilter != nil {
@@ -1174,12 +1174,14 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 	statSyscalls := stat.New("syscalls", "Number of enabled syscalls",
 		stat.Simple, stat.NoGraph, stat.Link("/syscalls"))
 	statSyscalls.Add(len(enabledSyscalls))
+	// 需要额外查看loadCorpus
 	candidates := mgr.loadCorpus(enabledSyscalls)
 	mgr.setPhaseLocked(phaseLoadedCorpus)
 	opts := fuzzer.DefaultExecOpts(mgr.cfg, features, *flagDebug)
 
 	if mgr.mode == ModeFuzzing || mgr.mode == ModeCorpusTriage {
 		corpusUpdates := make(chan corpus.NewItemEvent, 128)
+		// 需要额外查看coverFilters结构体
 		mgr.corpus = corpus.NewFocusedCorpus(context.Background(),
 			corpusUpdates, mgr.coverFilters.Areas)
 		mgr.http.Corpus.Store(mgr.corpus)
@@ -1210,7 +1212,7 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 		fuzzerObj.AddCandidates(candidates)
 		mgr.fuzzer.Store(fuzzerObj)
 		mgr.http.Fuzzer.Store(fuzzerObj)
-
+			// 需要关注这三个go routine
 		go mgr.corpusInputHandler(corpusUpdates)
 		go mgr.corpusMinimization()
 		go mgr.fuzzerLoop(fuzzerObj)
