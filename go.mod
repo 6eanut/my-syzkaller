@@ -35,7 +35,7 @@ require (
 	golang.org/x/perf v0.0.0-20230221235046-aebcfb61e84c
 	golang.org/x/sync v0.12.0
 	golang.org/x/sys v0.31.0
-	golang.org/x/tools v0.29.0
+	golang.org/x/tools v0.31.0
 	google.golang.org/api v0.228.0
 	google.golang.org/appengine/v2 v2.0.5
 	google.golang.org/genproto v0.0.0-20250122153221-138b5a5a4fd4
@@ -284,7 +284,7 @@ require (
 	go.uber.org/zap v1.24.0 // indirect
 	golang.org/x/crypto v0.36.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20241108190413-2d47ceb2692f // indirect
-	golang.org/x/mod v0.22.0 // indirect
+	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/net v0.37.0 // indirect
 	golang.org/x/term v0.30.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
